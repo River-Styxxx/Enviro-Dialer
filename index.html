@@ -338,7 +338,7 @@ button{font-family:var(--body);cursor:pointer}
 .rfbtn.lock{opacity:.45;border-color:var(--line2)}
 .clbtn{background:var(--panel);border:1px solid var(--line2);color:var(--dim);font-family:var(--mono);font-size:12px;padding:7px 12px;border-radius:10px}
 /* modals / sheets */
-.modal{position:fixed;inset:0;background:rgba(2,8,5,.72);display:flex;align-items:flex-end;justify-content:center;z-index:120;padding:0}
+.sheetmodal{position:fixed;inset:0;background:rgba(2,8,5,.72);display:flex;align-items:flex-end;justify-content:center;z-index:120;padding:0}
 .sheet{background:var(--panel);border:1px solid var(--line2);border-radius:18px 18px 0 0;width:100%;max-width:760px;padding:20px 18px calc(20px + env(safe-area-inset-bottom));box-shadow:0 -12px 40px rgba(0,0,0,.5)}
 .sheet.wide{max-width:760px}
 .sheeth{font-family:var(--disp);font-weight:800;font-size:18px;margin-bottom:6px;color:var(--ink)}
@@ -12302,7 +12302,7 @@ function App() {
     onFocus: e => e.target.select(),
     onClick: e => e.target.select()
   })), showBackupPrompt && /*#__PURE__*/React.createElement("div", {
-    className: "modal",
+    className: "sheetmodal",
     onClick: () => setShowBackupPrompt(false)
   }, /*#__PURE__*/React.createElement("div", {
     className: "sheet",
@@ -12322,7 +12322,7 @@ function App() {
   }, "Back up now"), /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowBackupPrompt(false)
   }, "Later")))), newDayPrompt && /*#__PURE__*/React.createElement("div", {
-    className: "modal",
+    className: "sheetmodal",
     onClick: () => setNewDayPrompt(false)
   }, /*#__PURE__*/React.createElement("div", {
     className: "sheet",
@@ -12343,7 +12343,7 @@ function App() {
   }, "Save daily backup"), /*#__PURE__*/React.createElement("button", {
     onClick: () => setNewDayPrompt(false)
   }, "Skip")))), showClose && /*#__PURE__*/React.createElement("div", {
-    className: "modal"
+    className: "sheetmodal"
   }, /*#__PURE__*/React.createElement("div", {
     className: "sheet",
     onClick: e => e.stopPropagation()
@@ -12357,7 +12357,7 @@ function App() {
     className: "primary",
     onClick: () => setShowClose(false)
   }, "Keep working")))), showSync && /*#__PURE__*/React.createElement("div", {
-    className: "modal",
+    className: "sheetmodal",
     onClick: () => setShowSync(false)
   }, /*#__PURE__*/React.createElement("div", {
     className: "sheet wide",
@@ -12390,7 +12390,7 @@ function App() {
   }, "Close")), /*#__PURE__*/React.createElement("div", {
     className: "synckeys"
   }, "Backend: ", supaCfg.url.replace('https://', '').slice(0, 28), "\u2026"))), importFlags && /*#__PURE__*/React.createElement("div", {
-    className: "modal"
+    className: "sheetmodal"
   }, /*#__PURE__*/React.createElement("div", {
     className: "sheet wide",
     onClick: e => e.stopPropagation()
@@ -12461,7 +12461,7 @@ function App() {
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => finishImport()
   }, "Done \u2014 apply")))), showImport && /*#__PURE__*/React.createElement("div", {
-    className: "modal",
+    className: "sheetmodal",
     onClick: () => setShowImport(false)
   }, /*#__PURE__*/React.createElement("div", {
     className: "sheet wide",

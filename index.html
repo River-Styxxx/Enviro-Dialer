@@ -29,7 +29,7 @@
 *{box-sizing:border-box}
 html,body,#root{margin:0;min-height:100%}
 body{background:radial-gradient(1100px 520px at 85% -8%,#0b271a 0%,transparent 55%),var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
-.wrap{max-width:760px;margin:0 auto;padding:10px 12px 60px}
+.wrap{max-width:760px;margin:0 auto;padding:max(14px, env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 60px calc(12px + env(safe-area-inset-left))}
 .muted{color:var(--faint)}
 button{font-family:var(--body);cursor:pointer}
 

@@ -1,2 +1,2 @@
-# Enviro-Dialer
+# EWDX
 Only me

@@ -10030,6 +10030,28 @@ const SUPA_URL_DEFAULT = "https://ieknojiidirtskhtbkoq.supabase.co";
 const SUPA_KEY_DEFAULT = "sb_publishable_WOkJo4rCm0dd4Mz2s-sG8w_Ru62eit0";
 const SOURCE_412 = "4-12-26 CalOSHA Training - Punjabi Dental Society";
 
+// ============ DEBUG LOG (ring buffer, captures errors + actions) ============
+// Lives outside React so it survives crashes. "Copy debug log" button dumps this.
+const DEBUG_BUF = [];
+function dlog(kind, msg, extra) {
+  try {
+    DEBUG_BUF.push({
+      t: new Date().toISOString(),
+      kind,
+      msg: String(msg),
+      extra: extra ? String(extra).slice(0, 500) : undefined
+    });
+    while (DEBUG_BUF.length > 120) DEBUG_BUF.shift();
+  } catch (e) {}
+}
+window.addEventListener('error', function (e) {
+  dlog('ERROR', e.message, (e.filename || '') + ':' + (e.lineno || '') + ' ' + (e.error && e.error.stack || ''));
+});
+window.addEventListener('unhandledrejection', function (e) {
+  dlog('REJECT', e.reason && e.reason.message || e.reason, e.reason && e.reason.stack || '');
+});
+dlog('INFO', 'app boot');
+
 // ============ INFRA: IndexedDB / schema / backups / sync (see core_infra) ===
 // ============================================================================
 // Enviromerica Dialer — Core infrastructure (storage / backups / sync / merge)
@@ -10977,6 +10999,7 @@ function App() {
   const [showImport, setShowImport] = useState(false);
   const [impName, setImpName] = useState('');
   const [impText, setImpText] = useState('');
+  const [debugText, setDebugText] = useState('');
   const [showSync, setShowSync] = useState(false);
   const [listFilter, setListFilter] = useState([]); // [] = all sources; else array of selected sources
   const [saveState, setSaveState] = useState('ok'); // 'ok' | 'saving' | 'failed'
@@ -11064,6 +11087,7 @@ function App() {
       setSaveState('ok');
     } else {
       setSaveState('failed');
+      dlog('ERROR', 'persist failed', 'leads=' + next.length);
     }
   }
   async function retrySave() {
@@ -11205,8 +11229,10 @@ function App() {
         setSyncMsg('Pushed ✓ (cloud slot ' + slot + ')');
         bump('Pushed to backend');
       }
+      dlog('SYNC', 'push ok', 'slot=' + slot + ' leads=' + pros.length);
       return true;
     } catch (e) {
+      dlog('SYNC', 'push FAILED', e.message);
       if (!silent) {
         setSyncMsg('Push failed');
         bump('Push failed: ' + (e.message || e));
@@ -11230,8 +11256,10 @@ function App() {
       const merged = mergeLeadSets(pros, cloudLeads);
       await persist(merged);
       setSyncMsg('Merged ✓ (' + merged.length + ' leads)');
+      dlog('SYNC', 'merge ok', 'cloud=' + cloudLeads.length + ' result=' + merged.length);
       bump('Merged from backend · ' + merged.length + ' leads');
     } catch (e) {
+      dlog('SYNC', 'merge FAILED', e.message);
       setSyncMsg('Merge failed');
       bump('Merge failed: ' + (e.message || e));
     }
@@ -11469,7 +11497,7 @@ function App() {
       return np;
     });
     await persist(next);
-    // every-5-CALLS backup prompt (Pool A) — counts genuine new calls within TODAY (resets daily)
+    dlog('ACTION', 'saveCall', (amend ? 'amend ' : '') + 'id=' + lead.id + ' outcome=' + outcome + (seat ? ' seat=' + seat : '') + (temp ? ' temp=' + temp : ''));
     if (!amend) {
       try {
         const today = todayISO();
@@ -12141,6 +12169,63 @@ function App() {
     }
   }, "\u21BA restore"), /*#__PURE__*/React.createElement("button", {
     onClick: async () => {
+      const today = todayISO();
+      let calls = 0,
+        hot = 0,
+        warm = 0,
+        cold = 0,
+        appts = 0,
+        demos = 0,
+        deleted = 0;
+      (pros || []).forEach(p => {
+        (p.log || []).forEach(l => {
+          calls++;
+        });
+        if (p.temp === 'hot') hot++;
+        if (p.temp === 'warm') warm++;
+        if (p.temp === 'cold') cold++;
+        if (p.status === 'appointment') appts++;
+        if (p.isDemo) demos++;
+        if (p.deleted) deleted++;
+      });
+      let cc = null;
+      try {
+        cc = await idbGet(K_CALLCOUNT);
+      } catch (e) {}
+      const report = {
+        when: new Date().toISOString(),
+        schema: SCHEMA_VERSION,
+        url: location.href,
+        ua: navigator.userAgent,
+        view,
+        sel,
+        listFilter,
+        counts: {
+          leads: (pros || []).length,
+          totalCalls: calls,
+          hot,
+          warm,
+          cold,
+          appts,
+          demos,
+          deleted,
+          callsToday: cc && cc.day === today ? cc.count : 0
+        },
+        saveState,
+        supaUrl: supaCfg.url,
+        recent: DEBUG_BUF.slice(-60)
+      };
+      const txt = JSON.stringify(report, null, 1);
+      setDebugText(txt);
+      try {
+        await navigator.clipboard.writeText(txt);
+        bump('Debug log copied');
+      } catch (e) {
+        bump('Debug log shown below');
+      }
+    }
+  }, "\uD83D\uDC1E debug"), /*#__PURE__*/React.createElement("button", {
+    onClick: async () => {
       const demos = pros.filter(p => p.isDemo && !p.deleted).length;
       if (!demos) {
         bump('No demo records to remove');
@@ -12187,6 +12272,19 @@ function App() {
         } else bump('Snapshot unreadable');
       }
     }, "Restore"));
+  })), debugText && /*#__PURE__*/React.createElement("div", {
+    className: "exportbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "exhead"
+  }, "Debug log \xB7 copied. Paste this to Claude when a bug happens.", /*#__PURE__*/React.createElement("span", {
+    className: "exclose",
+    onClick: () => setDebugText('')
+  }, "\xD7")), /*#__PURE__*/React.createElement("textarea", {
+    className: "exta",
+    readOnly: true,
+    value: debugText,
+    onFocus: e => e.target.select(),
+    onClick: e => e.target.select()
   })), exportText && /*#__PURE__*/React.createElement("div", {
     className: "exportbox"
   }, /*#__PURE__*/React.createElement("div", {

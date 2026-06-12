@@ -233,6 +233,9 @@ button{font-family:var(--body);cursor:pointer}
 .tabs.six{grid-template-columns:repeat(6,1fr)}
 .tabs.six .tab{padding:10px 3px;font-size:11.5px;gap:3px}
 .emailgo{font-family:var(--mono);font-size:11px;color:var(--blue);white-space:nowrap}
+.emailqbtn{width:100%;margin-top:9px;background:var(--panel3);border:1px solid var(--line2);color:var(--dim);font-family:var(--disp);font-weight:700;font-size:13px;padding:11px;border-radius:10px}
+.emailqbtn.on{background:#0c3a4d;border-color:#22a3c9;color:#9fdcf0}
+.emaildone{margin-left:8px;background:var(--green-deep);border:1px solid var(--green);color:#eafff2;font-family:var(--mono);font-size:11px;font-weight:600;padding:6px 11px;border-radius:8px;white-space:nowrap}
 .toprow{display:flex;gap:6px;align-items:flex-start;margin-bottom:10px}
 .toprow .lookup{flex:1;margin-bottom:0}
 .calbtn,.newbtn{background:var(--panel);border:1px solid var(--line2);color:var(--ink);font-weight:600;font-size:12.5px;padding:10px 11px;border-radius:11px;white-space:nowrap;align-self:stretch}
@@ -10218,6 +10221,7 @@ function upgradeLead(p) {
   if (q.hours === undefined) q.hours = null;
   if (q.lunchCall === undefined) q.lunchCall = false;
   if (q.ctAbs === undefined) q.ctAbs = null;
+  if (q.emailQueued === undefined) q.emailQueued = false;
   if (q.society === undefined) q.society = (q.sources && q.sources.some(s => s.indexOf('Punjabi') >= 0)) ? 'Punjabi Dental Society' : (q.isDemo ? 'None' : 'None');
   if (q.email === undefined) q.email = null;
   if (q.temp === undefined || q.temp === null) q.temp = '';
@@ -11519,6 +11523,8 @@ function App() {
   function applyQuick(q) {
     if (q.seat) setSeat(q.seat);
     setNote(n => (n ? n + ' · ' : '') + q.t);
+    // "Send email" quick message → auto-add to the persistent email list
+    if (q.t === 'Send email') { setEmailQueue(true); bump('Added to email list'); }
   }
   async function applyFollowup(dateISO, time) {
     if (!activeId || !dateISO) return;
@@ -11796,6 +11802,16 @@ function App() {
     const next = pros.map(p => p.id === activeId ? {
       ...p,
       lunchCall: v,
+      lastEdited: nowEdit()
+    } : p);
+    await persist(next);
+    setRefresh(r => r + 1);
+  }
+  async function setEmailQueue(v, id) {
+    const target = id || activeId;
+    const next = pros.map(p => p.id === target ? {
+      ...p,
+      emailQueued: v,
       lastEdited: nowEdit()
     } : p);
     await persist(next);
@@ -12182,6 +12198,7 @@ function App() {
     onNumbers: setNumbers,
     onHours: setHours,
     onLunchCall: setLunchCall,
+    onEmailQueue: v => setEmailQueue(v),
     onNewLead: () => setNewOpen(true),
     onPrev: () => {
       if (jumpId) {
@@ -12231,7 +12248,8 @@ function App() {
     onPick: id => {
       setJumpId(id);
       setView('dial');
-    }
+    },
+    onRemove: id => setEmailQueue(false, id)
   }), view === 'cal' && /*#__PURE__*/React.createElement(CalendarView, {
     pros: pros,
     onPick: id => {
@@ -13181,6 +13199,7 @@ function DialCard(props) {
     onNumbers,
     onHours,
     onLunchCall,
+    onEmailQueue,
     onNewLead,
     onPrev,
     onSkip,
@@ -13322,7 +13341,10 @@ function DialCard(props) {
   }, "\u2600 Warm"), /*#__PURE__*/React.createElement("div", {
     className: 'tmp cold' + (temp === 'cold' ? ' sel' : ''),
     onClick: () => setTemp(temp === 'cold' ? null : 'cold')
-  }, "\u2744 Cold"))), /*#__PURE__*/React.createElement("div", {
+  }, "\u2744 Cold")), /*#__PURE__*/React.createElement("button", {
+    className: 'emailqbtn' + (p.emailQueued ? ' on' : ''),
+    onClick: () => onEmailQueue(!p.emailQueued)
+  }, p.emailQueued ? '\u2709 In email list — tap to remove' : '\u2709 Add to email list')), /*#__PURE__*/React.createElement("div", {
     className: "sec"
   }, /*#__PURE__*/React.createElement("div", {
     className: "lab"
@@ -13714,32 +13736,37 @@ function HotView({
 }
 function EmailView({
   pros,
-  onPick
+  onPick,
+  onRemove
 }) {
-  const t = todayISO();
-  const rows = pros.filter(p => p.email && (p.log || []).some(l => l.date === t));
+  const rows = pros.filter(p => p.emailQueued && !p.deleted);
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "subline"
-  }, rows.length, " lead", rows.length === 1 ? '' : 's', " touched today with an email \xB7 tap to open and personalize"), rows.length === 0 ? /*#__PURE__*/React.createElement("div", {
+  }, rows.length, " lead", rows.length === 1 ? '' : 's', " in the email list \xB7 stays until you remove it"), rows.length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "empty"
-  }, "No leads with an email logged today yet.") : rows.map(p => {
-    const last = [...(p.log || [])].reverse().find(l => l.date === t);
+  }, "Email list is empty. Add a lead from its card (the button below the temperature badges), or it gets added automatically when you create an email.") : rows.map(p => {
+    const lastNote = [...(p.log || [])].reverse().find(l => l.note);
     return /*#__PURE__*/React.createElement("div", {
       key: p.id,
-      className: "row go",
-      onClick: () => onPick(p.id)
+      className: "row"
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
-        minWidth: 0
-      }
+        minWidth: 0,
+        cursor: 'pointer'
+      },
+      onClick: () => onPick(p.id)
     }, /*#__PURE__*/React.createElement("div", {
       className: "nm2"
     }, p.first, " ", p.last), /*#__PURE__*/React.createElement("div", {
       className: "meta"
-    }, p.email, last && last.note ? ' · ' + last.note.slice(0, 50) : '')), /*#__PURE__*/React.createElement("span", {
-      className: "emailgo"
-    }, "\u2709 open"));
+    }, p.email || 'no email saved', lastNote && lastNote.note ? ' \xB7 ' + lastNote.note.slice(0, 45) : '')), /*#__PURE__*/React.createElement("span", {
+      className: "emailgo",
+      onClick: () => onPick(p.id)
+    }, "\u2709 open"), /*#__PURE__*/React.createElement("button", {
+      className: "emaildone",
+      onClick: () => onRemove(p.id)
+    }, "\u2713 sent"));
   }));
 }
 function ApptsView({

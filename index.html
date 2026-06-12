@@ -372,6 +372,20 @@ button{font-family:var(--body);cursor:pointer}
 .numadd{display:flex;gap:6px;margin-top:8px}
 .numadd input{flex:1;background:var(--panel3);border:1px solid var(--line);border-radius:8px;color:var(--ink);font-family:var(--mono);font-size:13px;padding:8px}
 .numadd select{background:var(--panel3);border:1px solid var(--line);border-radius:8px;color:var(--ink);font-family:var(--mono);font-size:12px;padding:8px}
+.hourseditor{background:var(--panel2);border:1px solid var(--line2);border-radius:12px;padding:12px;margin:10px 0}
+.hoursttl{font-family:var(--disp);font-weight:700;font-size:13px;color:var(--ink);margin-bottom:9px}
+.hoursmut{font-family:var(--mono);font-weight:400;font-size:10px;color:var(--faint);margin-left:6px}
+.hdays{display:flex;gap:5px;margin-bottom:10px}
+.hday{flex:1;background:var(--panel3);border:1px solid var(--line);color:var(--faint);font-family:var(--mono);font-size:11px;font-weight:600;padding:8px 2px;border-radius:8px}
+.hday.on{background:var(--green-deep);border-color:var(--green);color:#eafff2}
+.hcopy{background:var(--panel3);border:1px solid var(--line);color:var(--dim);font-family:var(--mono);font-size:10.5px;padding:6px 10px;border-radius:8px;margin-bottom:9px}
+.hrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)}
+.hrowlbl{width:34px;font-family:var(--mono);font-weight:700;font-size:11px;color:var(--green-br)}
+.hrowfields{flex:1;display:flex;gap:6px;flex-wrap:wrap}
+.hrowfields label{display:flex;flex-direction:column;font-family:var(--mono);font-size:9px;color:var(--faint);gap:2px}
+.hrowfields select{background:var(--panel3);border:1px solid var(--line);border-radius:6px;color:var(--ink);font-family:var(--mono);font-size:11px;padding:5px 4px}
+.hlunchcall{display:flex;align-items:center;gap:7px;margin-top:10px;font-family:var(--mono);font-size:11.5px;color:var(--dim);cursor:pointer}
+.hlunchcall input{width:16px;height:16px;accent-color:var(--green)}
 </style>
 </head>
 <body>
@@ -10166,6 +10180,8 @@ function upgradeLead(p) {
   if (q.lastEdited === undefined) q.lastEdited = null;
   if (q.deleted === undefined) q.deleted = false;
   if (q.isDemo === undefined) q.isDemo = false;
+  if (q.hours === undefined) q.hours = null;
+  if (q.lunchCall === undefined) q.lunchCall = false;
   if (q.society === undefined) q.society = (q.sources && q.sources.some(s => s.indexOf('Punjabi') >= 0)) ? 'Punjabi Dental Society' : (q.isDemo ? 'None' : 'None');
   if (q.email === undefined) q.email = null;
   if (q.temp === undefined || q.temp === null) q.temp = '';
@@ -10874,17 +10890,45 @@ const DEFAULT_AVAIL = {
   bestEnd: null
 };
 const getAvail = p => p.avail || DEFAULT_AVAIL;
+// PER-DAY HOURS: p.hours = { "1":{o:540,c:1020,ls:720,le:780}, ... } keys present = open days.
+// o=open min, c=close min, ls=lunch start, le=lunch end (ls/le null = no lunch). p.lunchCall=true means OK to call at lunch.
+function hasHours(p) { return p.hours && Object.keys(p.hours).length > 0; }
+function dayHours(p, dow) { return (p.hours && p.hours[dow]) || null; }
 function callableNow(p, now, dow) {
+  // per-day hours take precedence if set
+  if (hasHours(p)) {
+    const h = dayHours(p, dow);
+    if (!h) return false;                       // closed today
+    if (now < h.o || now > h.c) return false;   // outside hours
+    if (p.lunchCall !== true && h.ls != null && now >= h.ls && now <= h.le) return false; // lunch (unless call-at-lunch)
+    return true;
+  }
   const a = getAvail(p);
   if (a.openDays && a.openDays.length && !a.openDays.includes(dow)) return false;
   if (now < a.open || now > a.close) return false;
   if (a.lunchCall === false && a.lunchStart != null && now >= a.lunchStart && now <= a.lunchEnd) return false;
   return true;
 }
-// is this office closed on the given weekday (per parsed openDays)? only when avail was actually parsed
+// closed today: per-day hours first, else legacy openDays
 function closedToday(p, dow) {
+  if (hasHours(p)) return !dayHours(p, dow);
   if (!p.avail || !p.avail.openDays || !p.avail.openDays.length) return false;
   return !p.avail.openDays.includes(dow);
+}
+// is the lead currently in its lunch window today (and lunch-calls not allowed)?
+function inLunchNow(p, now, dow) {
+  if (p.lunchCall === true) return false;
+  if (hasHours(p)) { const h = dayHours(p, dow); return !!(h && h.ls != null && now >= h.ls && now <= h.le); }
+  const a = getAvail(p);
+  return !!(p.avail && a.lunchStart != null && a.lunchCall === false && now >= a.lunchStart && now <= a.lunchEnd);
+}
+// is the lead outside its open-close hours today (but open day)?
+function outsideHoursNow(p, now, dow) {
+  if (closedToday(p, dow)) return false; // closed handled separately
+  if (hasHours(p)) { const h = dayHours(p, dow); return !!(h && (now < h.o || now > h.c)); }
+  if (!p.avail) return false;
+  const a = getAvail(p);
+  return now < a.open || now > a.close;
 }
 function bestMatch(p, now, dow) {
   const a = getAvail(p);
@@ -11318,10 +11362,10 @@ function App() {
     const anchorId = order[pos]; // remember where we were
     const list = pros.filter(p => !p.deleted && srcMatch(p) && (sel === 'any' ? inAny(p, t, n) : inDay(p, D, sel))).sort((x, y) => {
       if (sel === 'any') {
-        // 0) closed-today leads sink to the very bottom (still visible, just last)
-        const cx = closedToday(x, dow) ? 1 : 0,
-          cy = closedToday(y, dow) ? 1 : 0;
-        if (cx !== cy) return cx - cy;
+        // 0) NOT-CALLABLE-NOW leads sink to the very bottom (closed today, at lunch, or outside hours). Still visible, just last.
+        const xSink = (closedToday(x, dow) || inLunchNow(x, n, dow) || outsideHoursNow(x, n, dow)) ? 1 : 0;
+        const ySink = (closedToday(y, dow) || inLunchNow(y, n, dow) || outsideHoursNow(y, n, dow)) ? 1 : 0;
+        if (xSink !== ySink) return xSink - ySink;
       }
       // 1) temperature ALWAYS wins first
       const tx = x.temp === 'hot' ? 0 : x.temp === 'warm' ? 1 : 2,
@@ -11652,6 +11696,24 @@ function App() {
       lastEdited: new Date().toISOString()
     } : p);
     await persist(next);
+  }
+  async function setHours(hrs) {
+    const next = pros.map(p => p.id === activeId ? {
+      ...p,
+      hours: hrs,
+      lastEdited: new Date().toISOString()
+    } : p);
+    await persist(next);
+    setRefresh(r => r + 1);
+  }
+  async function setLunchCall(v) {
+    const next = pros.map(p => p.id === activeId ? {
+      ...p,
+      lunchCall: v,
+      lastEdited: new Date().toISOString()
+    } : p);
+    await persist(next);
+    setRefresh(r => r + 1);
   }
   function advance() {
     setJumpId(null);
@@ -12029,6 +12091,8 @@ function App() {
     onRemoveContact: removeContact,
     onSetEmail: setLeadEmail,
     onNumbers: setNumbers,
+    onHours: setHours,
+    onLunchCall: setLunchCall,
     onNewLead: () => setNewOpen(true),
     onPrev: () => {
       if (jumpId) {
@@ -12753,6 +12817,123 @@ function LookupBar({
     }
   }, "Import & merge")));
 }
+function HoursEditor({
+  hours,
+  lunchCall,
+  onChange,
+  onLunchCall
+}) {
+  const WDL = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const h = hours || {};
+  // build 30-min time options
+  const opts = [];
+  for (let m = 360; m <= 1320; m += 30) {
+    const hr = Math.floor(m / 60),
+      mn = m % 60;
+    const ampm = hr < 12 ? 'AM' : 'PM';
+    const h12 = hr % 12 === 0 ? 12 : hr % 12;
+    opts.push({
+      v: m,
+      l: h12 + ':' + String(mn).padStart(2, '0') + ' ' + ampm
+    });
+  }
+  function toggleDay(d) {
+    const nh = {
+      ...h
+    };
+    if (nh[d]) {
+      delete nh[d];
+    } else {
+      nh[d] = {
+        o: 540,
+        c: 1020,
+        ls: null,
+        le: null
+      };
+    } // default 9-5, no lunch
+    onChange(Object.keys(nh).length ? nh : null);
+  }
+  function setField(d, f, v) {
+    const nh = {
+      ...h,
+      [d]: {
+        ...h[d],
+        [f]: v
+      }
+    };
+    onChange(nh);
+  }
+  function copyToAll() {
+    const days = Object.keys(h);
+    if (!days.length) return;
+    const src = h[days[0]];
+    const nh = {};
+    days.forEach(d => {
+      nh[d] = {
+        ...src
+      };
+    });
+    onChange(nh);
+  }
+  const openDays = Object.keys(h);
+  return /*#__PURE__*/React.createElement("div", {
+    className: "hourseditor"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "hoursttl"
+  }, "\uD83D\uDD50 Hours ", /*#__PURE__*/React.createElement("span", {
+    className: "hoursmut"
+  }, "tap a day = open \xB7 untapped = closed")), /*#__PURE__*/React.createElement("div", {
+    className: "hdays"
+  }, WDL.map((lbl, d) => /*#__PURE__*/React.createElement("button", {
+    key: d,
+    className: 'hday' + (h[d] ? ' on' : ''),
+    onClick: () => toggleDay(d)
+  }, lbl))), openDays.length > 1 && /*#__PURE__*/React.createElement("button", {
+    className: "hcopy",
+    onClick: copyToAll
+  }, "copy first open day to all"), openDays.map(d => /*#__PURE__*/React.createElement("div", {
+    key: d,
+    className: "hrow"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "hrowlbl"
+  }, WDL[d]), /*#__PURE__*/React.createElement("div", {
+    className: "hrowfields"
+  }, /*#__PURE__*/React.createElement("label", null, "open", /*#__PURE__*/React.createElement("select", {
+    value: h[d].o,
+    onChange: e => setField(d, 'o', +e.target.value)
+  }, opts.map(o => /*#__PURE__*/React.createElement("option", {
+    key: o.v,
+    value: o.v
+  }, o.l)))), /*#__PURE__*/React.createElement("label", null, "close", /*#__PURE__*/React.createElement("select", {
+    value: h[d].c,
+    onChange: e => setField(d, 'c', +e.target.value)
+  }, opts.map(o => /*#__PURE__*/React.createElement("option", {
+    key: o.v,
+    value: o.v
+  }, o.l)))), /*#__PURE__*/React.createElement("label", null, "lunch", /*#__PURE__*/React.createElement("select", {
+    value: h[d].ls == null ? '' : h[d].ls,
+    onChange: e => setField(d, 'ls', e.target.value === '' ? null : +e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "none"), opts.map(o => /*#__PURE__*/React.createElement("option", {
+    key: o.v,
+    value: o.v
+  }, o.l)))), /*#__PURE__*/React.createElement("label", null, "to", /*#__PURE__*/React.createElement("select", {
+    value: h[d].le == null ? '' : h[d].le,
+    onChange: e => setField(d, 'le', e.target.value === '' ? null : +e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "\u2014"), opts.map(o => /*#__PURE__*/React.createElement("option", {
+    key: o.v,
+    value: o.v
+  }, o.l))))))), openDays.length > 0 && /*#__PURE__*/React.createElement("label", {
+    className: "hlunchcall"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: !!lunchCall,
+    onChange: e => onLunchCall(e.target.checked)
+  }), "Prefer to call during lunch (don't sink at lunch)"));
+}
 function NumbersCard({
   numbers,
   onNumbers
@@ -12909,6 +13090,8 @@ function DialCard(props) {
     onRemoveContact,
     onSetEmail,
     onNumbers,
+    onHours,
+    onLunchCall,
     onNewLead,
     onPrev,
     onSkip,
@@ -12953,7 +13136,11 @@ function DialCard(props) {
     className: "b cooling"
   }, "\u2744 RE-TOUCH"), closedToday(p, parseISO(todayISO()).getDay()) && /*#__PURE__*/React.createElement("span", {
     className: "b closedtag"
-  }, "\uD83D\uDEAB CLOSED TODAY")), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDEAB CLOSED TODAY"), !closedToday(p, parseISO(todayISO()).getDay()) && inLunchNow(p, nowMin(), parseISO(todayISO()).getDay()) && /*#__PURE__*/React.createElement("span", {
+    className: "b closedtag"
+  }, "\uD83C\uDF74 AT LUNCH"), !closedToday(p, parseISO(todayISO()).getDay()) && outsideHoursNow(p, nowMin(), parseISO(todayISO()).getDay()) && /*#__PURE__*/React.createElement("span", {
+    className: "b closedtag"
+  }, "\uD83C\uDF19 OUTSIDE HOURS")), /*#__PURE__*/React.createElement("div", {
     className: "city"
   }, p.city || '—'), p.society && p.society !== 'None' && /*#__PURE__*/React.createElement("span", {
     className: "socbadge soc-" + socCode(p.society).toLowerCase(),
@@ -12994,6 +13181,11 @@ function DialCard(props) {
     className: 'body' + (p.notes ? '' : ' empty')
   }, p.notes || 'No prior notes — cold first touch.')), /*#__PURE__*/React.createElement(HistoryCard, {
     p: p
+  }), /*#__PURE__*/React.createElement(HoursEditor, {
+    hours: p.hours,
+    lunchCall: p.lunchCall,
+    onChange: onHours,
+    onLunchCall: onLunchCall
   }), /*#__PURE__*/React.createElement("div", {
     className: "sec"
   }, /*#__PURE__*/React.createElement("div", {

@@ -333,6 +333,7 @@ button{font-family:var(--body);cursor:pointer}
 .appbar{display:flex;align-items:center;justify-content:space-between;padding:6px 2px 10px;gap:8px}
 .appbrand{font-family:var(--disp);font-weight:800;font-size:17px;letter-spacing:-.02em;color:var(--ink)}
 .appsub{color:var(--green);font-weight:700}
+.offbadge{display:inline-block;margin-left:9px;background:#4a2c0c;border:1px solid #d98324;color:#f0b770;font-family:var(--mono);font-size:10px;font-weight:600;padding:2px 8px;border-radius:6px;vertical-align:middle}
 .appbtns{display:flex;gap:7px}
 .rfbtn{background:var(--green-deep);border:1px solid var(--green);color:#eafff2;font-family:var(--mono);font-weight:600;font-size:12px;padding:7px 12px;border-radius:10px}
 .rfbtn.lock{opacity:.45;border-color:var(--line2)}
@@ -10163,6 +10164,40 @@ const K_POOLPTR = pool => 'crm:poolptr:' + pool;
 const K_CALLCOUNT = 'crm:callcount'; // counter for every-5-calls prompt
 const K_LASTDAY = 'crm:lastday'; // last ISO day seen (for new-day backup)
 const K_SUPA = 'crm:supa'; // {url, key} override
+const K_CLOCKOFF = 'crm:clockoffset'; // ms to add to device time to get backend time
+
+// ---- CLOCK SYNC: normalize all edit timestamps to BACKEND time --------------
+// Device clocks can be wrong. We measure offset = (backend_now - device_now) and
+// stamp every lastEdited in backend-corrected time, so "most recent wins" is always fair.
+let CLOCK_OFFSET = 0; // ms; loaded from storage on boot, refreshed on each push/pull
+function nowEdit() { return new Date(Date.now() + CLOCK_OFFSET).toISOString(); }
+function nowEditMs() { return Date.now() + CLOCK_OFFSET; }
+async function loadClockOffset() {
+  try { const v = await idbGet(K_CLOCKOFF); if (typeof v === 'number' && isFinite(v)) CLOCK_OFFSET = v; } catch (e) {}
+}
+// Ask the backend for its current time via a tiny RPC (returns epoch ms). Reliable + tiny.
+// Requires the SQL function now_ms() to exist (provided in setup). Falls back gracefully if absent.
+async function syncClock(sb) {
+  if (!sb) return false;
+  try {
+    const t0 = Date.now();
+    const { data, error } = await sb.rpc('now_ms');
+    const t1 = Date.now();
+    if (!error && data != null) {
+      const serverMs = Number(data);
+      const rtt = t1 - t0;
+      const deviceMidpoint = t0 + rtt / 2;     // best estimate of device time when server answered
+      const off = serverMs - deviceMidpoint;
+      if (isFinite(off) && Math.abs(off) < 31536000000) { // sane: < 1 year drift
+        CLOCK_OFFSET = off;
+        try { await idbSet(K_CLOCKOFF, off); } catch (e) {}
+        dlog('CLOCK', 'synced', 'offset_ms=' + Math.round(off) + ' rtt=' + rtt);
+        return true;
+      }
+    } else if (error) { dlog('CLOCK', 'now_ms failed (add SQL fn?)', error.message); }
+  } catch (e) { dlog('CLOCK', 'sync error', e.message); }
+  return false;
+}
 
 // ---- Schema versioning: ADDITIVE ONLY, never destructive ------------------
 // Loading old data upgrades it by ADDING missing fields with safe defaults.
@@ -10182,6 +10217,7 @@ function upgradeLead(p) {
   if (q.isDemo === undefined) q.isDemo = false;
   if (q.hours === undefined) q.hours = null;
   if (q.lunchCall === undefined) q.lunchCall = false;
+  if (q.ctAbs === undefined) q.ctAbs = null;
   if (q.society === undefined) q.society = (q.sources && q.sources.some(s => s.indexOf('Punjabi') >= 0)) ? 'Punjabi Dental Society' : (q.isDemo ? 'None' : 'None');
   if (q.email === undefined) q.email = null;
   if (q.temp === undefined || q.temp === null) q.temp = '';
@@ -10946,6 +10982,28 @@ function availLine(p) {
   if (a.bestDays && a.bestDays.length) s += ' · best ' + a.bestDays.map(d => WD[d]).join('/');
   return s;
 }
+// ---- TIMEZONE: callback times stored as an absolute instant (ctAbs) --------
+// absFromLocal: date (YYYY-MM-DD) + minutes-from-midnight in THIS device's local time -> epoch ms.
+function absFromLocal(dateISO, minutes) {
+  try {
+    const d = parseISO(dateISO);
+    d.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+    return d.getTime();
+  } catch (e) { return null; }
+}
+// localizeSchedule: re-derive nextDate/dow/ct from ctAbs in the CURRENT device's local timezone,
+// so the same canonical instant shows correctly everywhere. Returns a changed lead or null.
+function localizeSchedule(p) {
+  if (!p.ctAbs || !p.ctUserSet) return null;
+  const d = new Date(p.ctAbs);
+  if (isNaN(d.getTime())) return null;
+  const localMin = d.getHours() * 60 + d.getMinutes();
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+  const localDate = y + '-' + m + '-' + day;
+  const localDow = d.getDay();
+  if (p.ct === localMin && p.nextDate === localDate && p.dow === localDow) return null;
+  return { ...p, ct: localMin, ctEnd: localMin, nextDate: localDate, dow: localDow, weekday: WD[localDow], ctRaw: '@ ' + minLbl(localMin) };
+}
 // queue membership — date-aware + deferred any-day + snooze
 // EXCEPTION: a lead rescheduled for LATER TODAY (nextDate===today with a user-set time) re-enters today's
 // queue even though it was logged today, so same-day callbacks actually fire.
@@ -11078,6 +11136,7 @@ function App() {
     key: SUPA_KEY_DEFAULT
   });
   const [syncMsg, setSyncMsg] = useState('');
+  const [offlineNote, setOfflineNote] = useState(false);
   const [refreshLock, setRefreshLock] = useState(false);
   useEffect(() => {
     (async () => {
@@ -11086,14 +11145,21 @@ function App() {
         const c = await idbGet(K_SUPA);
         if (c && c.url && c.key) setSupaCfg(c);
       } catch (e) {}
+      await loadClockOffset(); // restore last known device→backend offset
       // SAFE LOAD via IndexedDB — never seed-overwrites on a read error (schema-versioned, additive upgrade only)
       const dataObj = await loadData(() => JSON.parse(JSON.stringify(SEED)));
-      const leads = dataObj.leads || [];
+      let leads = dataObj.leads || [];
+      // TIMEZONE: re-localize any absolute callback instants (ctAbs) to THIS device's local time.
+      // The stored moment is canonical; each device derives its own clock display from it.
+      let tzChanged = false;
+      leads = leads.map(p => { const lz = localizeSchedule(p); if (lz) { tzChanged = true; return lz; } return p; });
       if (dataObj.meta && dataObj.meta.loadError) {
         setTimeout(() => bump('Could not read storage — not overwriting. Try reopening.'), 400);
       }
       lastGood.current = JSON.stringify(leads);
       setPros(leads);
+      // if the device's timezone shifted any callback display, save the re-localized values
+      if (tzChanged) { try { await persistData(wrap(leads)); } catch (e) {} }
       // new-day backup check (Pool B) — first load on a new calendar day
       try {
         const today = todayISO();
@@ -11105,6 +11171,16 @@ function App() {
         }
         await idbSet(K_LASTDAY, today);
       } catch (e) {}
+      // AUTO-MERGE FROM BACKEND on every open (merge keeps newest, so it cannot lose fresh local work).
+      // Offline-safe: if no network/backend, load local and show an offline note; never block.
+      setTimeout(async () => {
+        if (!navigator.onLine) { setSyncMsg('Offline — not synced'); setOfflineNote(true); dlog('SYNC', 'boot offline'); return; }
+        const sb = supaClient();
+        if (!sb) { return; }
+        const ok = await mergeFromBackend(true); // silent merge
+        if (ok) { setSyncMsg('Synced ✓'); setOfflineNote(false); setTimeout(() => setSyncMsg(''), 2500); }
+        else { setSyncMsg('Offline — not synced'); setOfflineNote(true); }
+      }, 300);
     })();
   }, []);
   useEffect(() => {
@@ -11253,6 +11329,7 @@ function App() {
     }
     try {
       if (!silent) setSyncMsg('Pushing…');
+      await syncClock(sb); // recalibrate to backend time before stamping/merging
       // pull current cloud working data, merge, write back
       let cloudLeads = [];
       try {
@@ -11299,27 +11376,31 @@ function App() {
     }
   }
   // MERGE FROM = pull cloud, merge into local (never overwrites local)
-  async function mergeFromBackend() {
+  async function mergeFromBackend(silent) {
     const sb = supaClient();
     if (!sb) {
-      bump('Supabase not loaded');
-      return;
+      if (!silent) bump('Supabase not loaded');
+      return false;
     }
     try {
-      setSyncMsg('Merging…');
+      if (!silent) setSyncMsg('Merging…');
+      await syncClock(sb); // recalibrate to backend time before merging
       const {
         data
       } = await sb.from('crm_state').select('data').eq('id', 'main').single();
       const cloudLeads = data && data.data && data.data.leads ? data.data.leads : [];
-      const merged = mergeLeadSets(pros, cloudLeads);
+      let merged = mergeLeadSets(pros, cloudLeads);
+      // re-localize any merged-in callback instants to THIS device's timezone
+      merged = merged.map(p => { const lz = localizeSchedule(p); return lz || p; });
       await persist(merged);
-      setSyncMsg('Merged ✓ (' + merged.length + ' leads)');
+      if (!silent) setSyncMsg('Merged ✓ (' + merged.length + ' leads)');
       dlog('SYNC', 'merge ok', 'cloud=' + cloudLeads.length + ' result=' + merged.length);
-      bump('Merged from backend · ' + merged.length + ' leads');
+      if (!silent) bump('Merged from backend · ' + merged.length + ' leads');
+      return true;
     } catch (e) {
       dlog('SYNC', 'merge FAILED', e.message);
-      setSyncMsg('Merge failed');
-      bump('Merge failed: ' + (e.message || e));
+      if (!silent) { setSyncMsg('Merge failed'); bump('Merge failed: ' + (e.message || e)); }
+      return false;
     }
   }
   const isRealToday = sel !== 'any' && resolveChipDate(sel, todayISO()) === todayISO();
@@ -11460,12 +11541,17 @@ function App() {
         np.ctType = 'at';
         np.ctRaw = '@ ' + minLbl(np.ct);
         np.ctUserSet = true;
+        // store the ABSOLUTE instant this refers to (in THIS device's local time), so other
+        // devices/timezones display the same moment in their own local time. dow/ct are
+        // re-derived from ctAbs per-device on load (see localizeSchedule).
+        np.ctAbs = absFromLocal(dateISO, np.ct);
       } else {
         np.ct = null;
         np.ctEnd = null;
         np.ctType = '';
         np.ctRaw = '';
         np.ctUserSet = false;
+        np.ctAbs = null;
       } // no time → random slot that day
       if (np.log && np.log.length) {
         const lg = np.log.slice();
@@ -11535,7 +11621,7 @@ function App() {
       if (temp) np.temp = temp;
       const st = OUT2STATUS[outcome];
       if (st) np.status = st;
-      np.lastEdited = new Date().toISOString(); // for merge-sync conflict resolution
+      np.lastEdited = nowEdit(); // backend-corrected time for merge-sync
       // VM-type with no callback cue → never pin a weekday; route to Any and mark for rotation.
       // (A real cue typed in the note will still schedule via the post-call follow-up picker.)
       if (outcome === 'vm' || outcome === 'instavm' || outcome === 'no_answer') {
@@ -11693,7 +11779,7 @@ function App() {
     const next = pros.map(p => p.id === activeId ? {
       ...p,
       numbers: nums,
-      lastEdited: new Date().toISOString()
+      lastEdited: nowEdit()
     } : p);
     await persist(next);
   }
@@ -11701,7 +11787,7 @@ function App() {
     const next = pros.map(p => p.id === activeId ? {
       ...p,
       hours: hrs,
-      lastEdited: new Date().toISOString()
+      lastEdited: nowEdit()
     } : p);
     await persist(next);
     setRefresh(r => r + 1);
@@ -11710,7 +11796,7 @@ function App() {
     const next = pros.map(p => p.id === activeId ? {
       ...p,
       lunchCall: v,
-      lastEdited: new Date().toISOString()
+      lastEdited: nowEdit()
     } : p);
     await persist(next);
     setRefresh(r => r + 1);
@@ -11897,7 +11983,10 @@ function App() {
     className: "appbrand"
   }, "Enviromerica ", /*#__PURE__*/React.createElement("span", {
     className: "appsub"
-  }, "Dialer")), /*#__PURE__*/React.createElement("div", {
+  }, "Dialer"), offlineNote && /*#__PURE__*/React.createElement("span", {
+    className: "offbadge",
+    title: "Working offline — changes save locally and will sync next time you push or reopen online"
+  }, "⚠ offline")), /*#__PURE__*/React.createElement("div", {
     className: "appbtns"
   }, /*#__PURE__*/React.createElement("button", {
     className: 'rfbtn' + (refreshLock ? ' lock' : ''),
